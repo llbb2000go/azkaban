@@ -45,14 +45,17 @@ executorport=`cat $conf/azkaban.properties | grep executor.port | cut -d = -f 2`
 echo "Starting AzkabanExecutorServer on port $executorport ..."
 serverpath=`pwd`
 
-if [ -z $AZKABAN_OPTS ]; then
+if [[ -z "$AZKABAN_OPTS" ]]; then
   AZKABAN_OPTS="-Xmx3G"
 fi
 # Set the log4j configuration file
 if [ -f $conf/log4j.properties ]; then
-  AZKABAN_OPTS="$AZKABAN_OPTS -Dlog4j.configuration=file:$conf/log4j.properties"
+  AZKABAN_OPTS="$AZKABAN_OPTS -Dlog4j.configuration=file:$conf/log4j.properties -Dlog4j.log.dir=$azkaban_dir/logs"
+else
+  echo "Exit with error: $conf/log4j.properties file doesn't exist."
+  exit 1;
 fi
-AZKABAN_OPTS="$AZKABAN_OPTS -server -Dcom.sun.management.jmxremote -Djava.io.tmpdir=$tmpdir -Dexecutorport=$executorport -Dserverpath=$serverpath -Dlog4j.log.dir=$azkaban_dir/logs"
+AZKABAN_OPTS="$AZKABAN_OPTS -server -Dcom.sun.management.jmxremote -Djava.io.tmpdir=$tmpdir -Dexecutorport=$executorport -Dserverpath=$serverpath"
 
 java $AZKABAN_OPTS $JAVA_LIB_PATH -cp $CLASSPATH azkaban.execapp.AzkabanExecutorServer -conf $conf $@ &
 

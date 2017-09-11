@@ -20,109 +20,102 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import azkaban.constants.FlowProperties;
-import azkaban.constants.ServerProperties;
-
+import azkaban.Constants;
 import javax.servlet.http.HttpServletRequest;
-
 import org.junit.Before;
 import org.junit.Test;
 
 public class ExternalLinkUtilsTest {
-  private Props azkProps;
-
-  private Props jobProps;
-
-  private String jobId;
-
-  private HttpServletRequest mockRequest;
 
   private static final String EXEC_URL = "http://localhost:8081/executor";
-
   private static final String EXEC_QUERY_STRING = "execid=1";
-
   private static final String EXTERNAL_ANALYZER_TOPIC = "elephant";
-
   private static final String EXTERNAL_ANALYZER_URL_VALID_FORMAT =
       "http://elephant.linkedin.com/search?q=${url}";
-
   private static final String EXTERNAL_ANALYZER_EXPECTED_URL =
       "http://elephant.linkedin.com/search?q="
           + "http%3A%2F%2Flocalhost%3A8081%2Fexecutor%3Fexecid%3D1";
-
   private static final String EXTERNAL_LOGVIEWER_TOPIC = "kibana";
-
   private static final String EXTERNAL_LOGVIEWER_URL_VALID_FORMAT =
       "http://kibana.linkedin.com/search?jobid=${jobid}&&execid=${execid}";
-
   private static final String EXTERNAL_LOGVIEWER_EXPECTED_URL =
       "http://kibana.linkedin.com/search?jobid=Some%20%2B%20job&&execid=1";
+  private Props azkProps;
+  private Props jobProps;
+  private String jobId;
+  private HttpServletRequest mockRequest;
 
   @Before
   public void setUp() {
     // Empty server configuration
-    azkProps = new Props();
+    this.azkProps = new Props();
 
     // Job configuration consisting of only an exec id and job id
-    jobProps = new Props();
-    jobProps.put(FlowProperties.AZKABAN_FLOW_EXEC_ID, 1);
-    jobId = "Some + job";
+    this.jobProps = new Props();
+    this.jobProps.put(Constants.FlowProperties.AZKABAN_FLOW_EXEC_ID, 1);
+    this.jobId = "Some + job";
 
-    mockRequest = mock(HttpServletRequest.class);
+    this.mockRequest = mock(HttpServletRequest.class);
   }
 
   /**
-   * Test validates the happy path when an external analyzer is configured
-   * with '${url}' as the format in 'azkaban.properties'.
+   * Test validates the happy path when an external analyzer is configured with '${url}' as the
+   * format in 'azkaban.properties'.
    */
   @Test
   public void testGetExternalAnalyzerValidFormat() {
-    azkProps.put(ServerProperties.AZKABAN_SERVER_EXTERNAL_ANALYZER_TOPIC, EXTERNAL_ANALYZER_TOPIC);
-    azkProps.put(ServerProperties.AZKABAN_SERVER_EXTERNAL_TOPIC_URL.replace("${topic}", EXTERNAL_ANALYZER_TOPIC),
+    this.azkProps.put(Constants.ConfigurationKeys.AZKABAN_SERVER_EXTERNAL_ANALYZER_TOPIC,
+        EXTERNAL_ANALYZER_TOPIC);
+    this.azkProps.put(
+        Constants.ConfigurationKeys.AZKABAN_SERVER_EXTERNAL_TOPIC_URL
+            .replace("${topic}", EXTERNAL_ANALYZER_TOPIC),
         EXTERNAL_ANALYZER_URL_VALID_FORMAT);
 
-    when(mockRequest.getRequestURL()).thenReturn(new StringBuffer(EXEC_URL));
-    when(mockRequest.getQueryString()).thenReturn(EXEC_QUERY_STRING);
+    when(this.mockRequest.getRequestURL()).thenReturn(new StringBuffer(EXEC_URL));
+    when(this.mockRequest.getQueryString()).thenReturn(EXEC_QUERY_STRING);
 
-    String externalURL =
-        ExternalLinkUtils.getExternalAnalyzerOnReq(azkProps, mockRequest);
+    final String externalURL =
+        ExternalLinkUtils.getExternalAnalyzerOnReq(this.azkProps, this.mockRequest);
     assertTrue(externalURL.equals(EXTERNAL_ANALYZER_EXPECTED_URL));
   }
 
   /**
-   * Test validates the happy path when an log viewer is configured
-   * with '${execid}'  and '${jobid} as the format in 'azkaban.properties'.
+   * Test validates the happy path when an log viewer is configured with '${execid}'  and '${jobid}
+   * as the format in 'azkaban.properties'.
    */
   @Test
   public void testGetExternalLogViewerValidFormat() {
-    azkProps.put(ServerProperties.AZKABAN_SERVER_EXTERNAL_LOGVIEWER_TOPIC, EXTERNAL_LOGVIEWER_TOPIC);
-    azkProps.put(ServerProperties.AZKABAN_SERVER_EXTERNAL_TOPIC_URL.replace("${topic}", EXTERNAL_LOGVIEWER_TOPIC),
+    this.azkProps.put(Constants.ConfigurationKeys.AZKABAN_SERVER_EXTERNAL_LOGVIEWER_TOPIC,
+        EXTERNAL_LOGVIEWER_TOPIC);
+    this.azkProps.put(
+        Constants.ConfigurationKeys.AZKABAN_SERVER_EXTERNAL_TOPIC_URL
+            .replace("${topic}", EXTERNAL_LOGVIEWER_TOPIC),
         EXTERNAL_LOGVIEWER_URL_VALID_FORMAT);
 
-    String externalURL =
-        ExternalLinkUtils.getExternalLogViewer(azkProps, jobId, jobProps);
+    final String externalURL =
+        ExternalLinkUtils.getExternalLogViewer(this.azkProps, this.jobId, this.jobProps);
     assertTrue(externalURL.equals(EXTERNAL_LOGVIEWER_EXPECTED_URL));
   }
 
   /**
-   * Test validates the condition when an external analyzer is not configured
-   * in 'azkaban.properties'.
+   * Test validates the condition when an external analyzer is not configured in
+   * 'azkaban.properties'.
    */
   @Test
   public void testGetExternalAnalyzerNotConfigured() {
-    String executionExternalLinkURL =
-        ExternalLinkUtils.getExternalAnalyzerOnReq(azkProps, mockRequest);
+    final String executionExternalLinkURL =
+        ExternalLinkUtils.getExternalAnalyzerOnReq(this.azkProps, this.mockRequest);
     assertTrue(executionExternalLinkURL.equals(""));
   }
 
   /**
-   * Test validates the condition when an external log viewer is not configured
-   * in 'azkaban.properties'.
+   * Test validates the condition when an external log viewer is not configured in
+   * 'azkaban.properties'.
    */
   @Test
   public void testGetLogViewerNotConfigured() {
-    String executionExternalLinkURL =
-        ExternalLinkUtils.getExternalLogViewer(azkProps, jobId, jobProps);
+    final String executionExternalLinkURL =
+        ExternalLinkUtils.getExternalLogViewer(this.azkProps, this.jobId, this.jobProps);
     assertTrue(executionExternalLinkURL.equals(""));
   }
 
@@ -140,11 +133,14 @@ public class ExternalLinkUtilsTest {
   }
 
   /**
-   * Make sure that URLs for analyzers and logviewers are fetched correctly by setting it manually and then fetching them
+   * Make sure that URLs for analyzers and logviewers are fetched correctly by setting it manually
+   * and then fetching them
    */
   @Test
   public void testFetchURL() {
-    azkProps.put(ServerProperties.AZKABAN_SERVER_EXTERNAL_TOPIC_URL.replace("${topic}", "someTopic"), "This is a link");
-    assertTrue(ExternalLinkUtils.getURLForTopic("someTopic", azkProps).equals("This is a link"));
+    this.azkProps.put(Constants.ConfigurationKeys.AZKABAN_SERVER_EXTERNAL_TOPIC_URL
+        .replace("${topic}", "someTopic"), "This is a link");
+    assertTrue(
+        ExternalLinkUtils.getURLForTopic("someTopic", this.azkProps).equals("This is a link"));
   }
 }

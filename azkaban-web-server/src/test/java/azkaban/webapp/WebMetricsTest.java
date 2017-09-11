@@ -16,48 +16,30 @@
 
 package azkaban.webapp;
 
+import static org.junit.Assert.assertEquals;
+
 import azkaban.metrics.MetricsManager;
-import azkaban.metrics.MetricsTestUtility.DummyReporter;
 import azkaban.metrics.MetricsTestUtility;
-
-import java.time.Duration;
-import java.util.concurrent.TimeUnit;
-
-import org.junit.After;
+import com.codahale.metrics.MetricRegistry;
 import org.junit.Before;
 import org.junit.Test;
 
 
-public class WebMetricsTest{
+public class WebMetricsTest {
 
-  private DummyReporter dr;
+  private MetricsTestUtility testUtil;
+  private WebMetrics metrics;
 
   @Before
-  public void setup() {
-    dr = new DummyReporter(MetricsManager.INSTANCE.getRegistry());
-    dr.start(Duration.ofMillis(2).toMillis(), TimeUnit.MILLISECONDS);
-  }
-
-  @After
-  public void shutdown() {
-    if (null != dr)
-      dr.stop();
-
-    dr = null;
+  public void setUp() {
+    final MetricRegistry metricRegistry = new MetricRegistry();
+    this.testUtil = new MetricsTestUtility(metricRegistry);
+    this.metrics = new WebMetrics(new MetricsManager(metricRegistry));
   }
 
   @Test
   public void testLogFetchLatencyMetrics() {
-    MetricsTestUtility.testGauge("fetchLogLatency", dr, WebMetrics.INSTANCE::setFetchLogLatency);
-  }
-
-  @Test
-  public void testWebPostCallMeter() {
-    MetricsTestUtility.testMeter("Web-Post-Call-Meter", dr, WebMetrics.INSTANCE::markWebPostCall);
-  }
-
-  @Test
-  public void testWebGetCallMeter() {
-    MetricsTestUtility.testMeter("Web-Get-Call-Meter", dr, WebMetrics.INSTANCE::markWebGetCall);
+    this.metrics.setFetchLogLatency(14);
+    assertEquals(14, this.testUtil.getGaugeValue("fetchLogLatency"));
   }
 }

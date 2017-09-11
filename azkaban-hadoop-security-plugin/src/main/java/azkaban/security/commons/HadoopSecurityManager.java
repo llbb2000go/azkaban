@@ -16,15 +16,13 @@
 
 package azkaban.security.commons;
 
+import azkaban.utils.Props;
 import java.io.File;
 import java.io.IOException;
 import java.util.Properties;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.log4j.Logger;
-
-import azkaban.utils.Props;
 
 public abstract class HadoopSecurityManager {
 
@@ -42,6 +40,12 @@ public abstract class HadoopSecurityManager {
   public static final String OBTAIN_NAMENODE_TOKEN = "obtain.namenode.token";
   public static final String OBTAIN_HCAT_TOKEN = "obtain.hcat.token";
 
+  public static boolean shouldProxy(final Properties prop) {
+    final String shouldProxy = prop.getProperty(ENABLE_PROXYING);
+
+    return shouldProxy != null && shouldProxy.equals("true");
+  }
+
   public boolean isHadoopSecurityEnabled()
       throws HadoopSecurityManagerException {
     return false;
@@ -52,27 +56,21 @@ public abstract class HadoopSecurityManager {
   }
 
   /**
-   * Create a proxied user based on the explicit user name, taking other
-   * parameters necessary from properties file.
+   * Create a proxied user based on the explicit user name, taking other parameters necessary from
+   * properties file.
    */
   public abstract UserGroupInformation getProxiedUser(String toProxy)
       throws HadoopSecurityManagerException;
 
   /**
-   * Create a proxied user, taking all parameters, including which user to proxy
-   * from provided Properties.
+   * Create a proxied user, taking all parameters, including which user to proxy from provided
+   * Properties.
    */
   public abstract UserGroupInformation getProxiedUser(Props prop)
       throws HadoopSecurityManagerException;
 
   public abstract FileSystem getFSAsUser(String user)
       throws HadoopSecurityManagerException;
-
-  public static boolean shouldProxy(Properties prop) {
-    String shouldProxy = prop.getProperty(ENABLE_PROXYING);
-
-    return shouldProxy != null && shouldProxy.equals("true");
-  }
 
   public abstract void prefetchToken(File tokenFile, String userToProxy,
       Logger logger) throws HadoopSecurityManagerException;

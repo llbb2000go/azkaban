@@ -19,29 +19,27 @@ package azkaban.restli;
 import static org.junit.Assert.assertEquals;
 
 import azkaban.project.validator.ValidationReport;
-
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.server.RestLiServiceException;
-
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
-
+import org.junit.Assert;
 import org.junit.Test;
 
 /**
- * Test response to deploy with either warn or error reports.
- * If a report has any errors, a RestLiServiceException should be thrown.
- * Warnings should not elicit an exception.
- * If an exception does get raised, it should carry an HTTP 400 status
+ * Test response to deploy with either warn or error reports. If a report has any errors, a
+ * RestLiServiceException should be thrown. Warnings should not elicit an exception. If an exception
+ * does get raised, it should carry an HTTP 400 status
  */
 
 public class DeployProjectTest {
+
   @Test
   public void testWarnedDeploy() {
-    ProjectManagerResource resource = new ProjectManagerResource();
-    Map<String, ValidationReport> reports = new LinkedHashMap<String, ValidationReport>();
+    final ProjectManagerResource resource = new ProjectManagerResource();
+    final Map<String, ValidationReport> reports = new LinkedHashMap<>();
     for (int i = 0; i < 3; i++) {
       addMockWarning(reports, "Test warn level info message.");
     }
@@ -52,8 +50,8 @@ public class DeployProjectTest {
 
   @Test
   public void testErrorDeploy() {
-    ProjectManagerResource resource = new ProjectManagerResource();
-    Map<String, ValidationReport> reports = new LinkedHashMap<String, ValidationReport>();
+    final ProjectManagerResource resource = new ProjectManagerResource();
+    final Map<String, ValidationReport> reports = new LinkedHashMap<>();
     for (int i = 0; i < 3; i++) {
       addMockError(reports, "Test error level info message.");
     }
@@ -61,7 +59,8 @@ public class DeployProjectTest {
     // report with errors. Uncaught exceptions will result in failure
     try {
       resource.checkReports(reports);
-    } catch (RestLiServiceException e) {
+      Assert.fail();
+    } catch (final RestLiServiceException e) {
       //Ensure we have the right status code and exit
       assertEquals(e.getStatus(), HttpStatus.S_400_BAD_REQUEST);
     }
@@ -69,14 +68,13 @@ public class DeployProjectTest {
 
   @Test
   public void testWarnErrorDeploy() {
-    ProjectManagerResource resource = new ProjectManagerResource();
-    Map<String, ValidationReport> reports = new LinkedHashMap<String, ValidationReport>();
+    final ProjectManagerResource resource = new ProjectManagerResource();
+    final Map<String, ValidationReport> reports = new LinkedHashMap<>();
     for (int i = 0; i < 7; i++) {
       // If i is even, make an error report, otherwise make a warning report
       if (i % 2 == 0) {
         addMockError(reports, "Test error level info message.");
-      }
-      else {
+      } else {
         addMockWarning(reports, "Test warn level info message.");
       }
     }
@@ -85,7 +83,8 @@ public class DeployProjectTest {
     // report with errors. Uncaught exceptions will result in failure
     try {
       resource.checkReports(reports);
-    } catch (RestLiServiceException e) {
+      Assert.fail();
+    } catch (final RestLiServiceException e) {
       //Ensure we have the right status code and exit
       assertEquals(e.getStatus(), HttpStatus.S_400_BAD_REQUEST);
     }
@@ -96,8 +95,8 @@ public class DeployProjectTest {
    */
   @Test
   public void testErrorMessageDeploy() {
-    ProjectManagerResource resource = new ProjectManagerResource();
-    Map<String, ValidationReport> reports = new LinkedHashMap<String, ValidationReport>();
+    final ProjectManagerResource resource = new ProjectManagerResource();
+    final Map<String, ValidationReport> reports = new LinkedHashMap<>();
 
     addMockError(reports, "This should show up.");
 
@@ -105,7 +104,8 @@ public class DeployProjectTest {
     // report with errors. Uncaught exceptions will result in failure
     try {
       resource.checkReports(reports);
-    } catch (RestLiServiceException e) {
+      Assert.fail();
+    } catch (final RestLiServiceException e) {
       //Ensure we have the right status code and exit
       assertEquals(e.getStatus(), HttpStatus.S_400_BAD_REQUEST);
       assertEquals(e.getMessage(), "Validator Error reports errors: This should show up."
@@ -113,17 +113,17 @@ public class DeployProjectTest {
     }
   }
 
-  private void addMockWarning(Map<String, ValidationReport> reports, String msg) {
-    Set<String> warnMsgs = new HashSet<String>();
-    ValidationReport warnRpt = new ValidationReport();
+  private void addMockWarning(final Map<String, ValidationReport> reports, final String msg) {
+    final Set<String> warnMsgs = new HashSet<>();
+    final ValidationReport warnRpt = new ValidationReport();
     warnMsgs.add(msg);
     warnRpt.addWarningMsgs(warnMsgs);
     reports.put("Warn", warnRpt);
   }
 
-  private void addMockError(Map<String, ValidationReport> reports, String msg) {
-    Set<String> errorMsgs = new HashSet<String>();
-    ValidationReport errorRpt = new ValidationReport();
+  private void addMockError(final Map<String, ValidationReport> reports, final String msg) {
+    final Set<String> errorMsgs = new HashSet<>();
+    final ValidationReport errorRpt = new ValidationReport();
     errorMsgs.add(msg);
     errorRpt.addErrorMsgs(errorMsgs);
     reports.put("Error", errorRpt);

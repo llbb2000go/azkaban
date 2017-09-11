@@ -16,43 +16,92 @@
 
 package azkaban.soloserver;
 
-import org.apache.log4j.Logger;
+import static azkaban.ServiceProvider.SERVICE_PROVIDER;
 
+import azkaban.AzkabanCommonModule;
 import azkaban.database.AzkabanDatabaseSetup;
 import azkaban.database.AzkabanDatabaseUpdater;
+import azkaban.execapp.AzkabanExecServerModule;
 import azkaban.execapp.AzkabanExecutorServer;
 import azkaban.server.AzkabanServer;
-import azkaban.webapp.AzkabanWebServer;
 import azkaban.utils.Props;
+import azkaban.webapp.AzkabanWebServer;
+import azkaban.webapp.AzkabanWebServerModule;
+import com.google.inject.Guice;
+import javax.inject.Inject;
+import com.google.inject.Injector;
+import java.io.File;
+import java.io.IOException;
+import org.apache.commons.io.FileUtils;
+import org.apache.log4j.Logger;
+
 
 public class AzkabanSingleServer {
-  private static final Logger logger = Logger.getLogger(AzkabanWebServer.class);
+
+  private static final Logger log = Logger.getLogger(AzkabanWebServer.class);
+
+  private final AzkabanWebServer webServer;
+  private final AzkabanExecutorServer executor;
+
+  @Inject
+  public AzkabanSingleServer(final AzkabanWebServer webServer,
+      final AzkabanExecutorServer executor) {
+    this.webServer = webServer;
+    this.executor = executor;
+  }
 
   public static void main(String[] args) throws Exception {
-    logger.info("Starting Azkaban Server");
+    log.info("Starting Azkaban Server");
 
-    Props props = AzkabanServer.loadProps(args);
+    if (args.length == 0) {
+      args = prepareDefaultConf();
+    }
+
+    final Props props = AzkabanServer.loadProps(args);
     if (props == null) {
-      logger.error("Properties not found. Need it to connect to the db.");
-      logger.error("Exiting...");
+      log.error("Properties not found. Need it to connect to the db.");
+      log.error("Exiting...");
       return;
     }
 
-    boolean checkversion =
-        props.getBoolean(AzkabanDatabaseSetup.DATABASE_CHECK_VERSION, true);
-
-    if (checkversion) {
-      boolean updateDB =
-          props.getBoolean(AzkabanDatabaseSetup.DATABASE_AUTO_UPDATE_TABLES,
-              true);
-      String scriptDir =
-          props.getString(AzkabanDatabaseSetup.DATABASE_SQL_SCRIPT_DIR, "sql");
+    if (props.getBoolean(AzkabanDatabaseSetup.DATABASE_CHECK_VERSION, true)) {
+      final boolean updateDB = props
+          .getBoolean(AzkabanDatabaseSetup.DATABASE_AUTO_UPDATE_TABLES, true);
+      final String scriptDir = props.getString(AzkabanDatabaseSetup.DATABASE_SQL_SCRIPT_DIR, "sql");
       AzkabanDatabaseUpdater.runDatabaseUpdater(props, scriptDir, updateDB);
     }
 
-    AzkabanWebServer.main(args);
-    logger.info("Azkaban Web Server started...");
-    AzkabanExecutorServer.main(args);
-    logger.info("Azkaban Exec Server started...");
+    /* Initialize Guice Injector */
+    final Injector injector = Guice.createInjector(
+        new AzkabanCommonModule(props),
+        new AzkabanWebServerModule(),
+        new AzkabanExecServerModule()
+    );
+    SERVICE_PROVIDER.setInjector(injector);
+
+    /* Launch server */
+    injector.getInstance(AzkabanSingleServer.class).launch();
+  }
+
+  /**
+   * To enable "run out of the box for testing".
+   */
+  private static String[] prepareDefaultConf() throws IOException {
+    final File templateFolder = new File("test/local-conf-templates");
+    final File localConfFolder = new File("local/conf");
+    if (!localConfFolder.exists()) {
+      FileUtils.copyDirectory(templateFolder, localConfFolder.getParentFile());
+      log.info("Copied local conf templates from " + templateFolder.getAbsolutePath());
+    }
+    log.info("Using conf at " + localConfFolder.getAbsolutePath());
+    return new String[]{"-conf", "local/conf"};
+  }
+
+  private void launch() throws Exception {
+    AzkabanWebServer.launch(this.webServer);
+    log.info("Azkaban Web Server started...");
+
+    AzkabanExecutorServer.launch(this.executor);
+    log.info("Azkaban Exec Server started...");
   }
 }

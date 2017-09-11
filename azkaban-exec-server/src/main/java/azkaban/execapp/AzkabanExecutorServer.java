@@ -16,38 +16,16 @@
 
 package azkaban.execapp;
 
-import com.google.common.base.Throwables;
+import static azkaban.Constants.AZKABAN_EXECUTOR_PORT_FILENAME;
+import static azkaban.Constants.ConfigurationKeys;
+import static azkaban.ServiceProvider.SERVICE_PROVIDER;
+import static azkaban.execapp.ExecJettyServerModule.EXEC_JETTY_SERVER;
+import static azkaban.execapp.ExecJettyServerModule.EXEC_ROOT_CONTEXT;
+import static com.google.common.base.Preconditions.checkState;
+import static java.util.Objects.requireNonNull;
 
-import org.apache.commons.lang.StringUtils;
-import org.apache.log4j.Logger;
-import org.joda.time.DateTimeZone;
-import org.mortbay.jetty.Connector;
-import org.mortbay.jetty.Server;
-import org.mortbay.jetty.servlet.Context;
-import org.mortbay.jetty.servlet.ServletHolder;
-import org.mortbay.thread.QueuedThreadPool;
-
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.lang.management.ManagementFactory;
-import java.lang.reflect.Constructor;
-import java.net.InetAddress;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.TimeZone;
-
-import javax.management.MBeanInfo;
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
-
-import azkaban.constants.ServerInternals;
-import azkaban.constants.ServerProperties;
-
+import azkaban.AzkabanCommonModule;
+import azkaban.Constants;
 import azkaban.execapp.event.JobCallbackManager;
 import azkaban.execapp.jmx.JmxFlowRunnerManager;
 import azkaban.execapp.jmx.JmxJobMBeanManager;
@@ -59,76 +37,203 @@ import azkaban.execapp.metric.NumRunningJobMetric;
 import azkaban.executor.Executor;
 import azkaban.executor.ExecutorLoader;
 import azkaban.executor.ExecutorManagerException;
-import azkaban.executor.JdbcExecutorLoader;
 import azkaban.jmx.JmxJettyServer;
 import azkaban.metric.IMetricEmitter;
 import azkaban.metric.MetricException;
 import azkaban.metric.MetricReportManager;
 import azkaban.metric.inmemoryemitter.InMemoryMetricEmitter;
-import azkaban.project.JdbcProjectLoader;
-import azkaban.project.ProjectLoader;
+import azkaban.metrics.MetricsManager;
 import azkaban.server.AzkabanServer;
 import azkaban.utils.Props;
 import azkaban.utils.StdOutErrRedirect;
-import azkaban.utils.SystemMemoryInfo;
 import azkaban.utils.Utils;
-import azkaban.metrics.MetricsManager;
+import com.google.inject.Guice;
+import com.google.inject.Injector;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.lang.management.ManagementFactory;
+import java.lang.reflect.Constructor;
+import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.TimeZone;
+import javax.inject.Inject;
+import javax.inject.Named;
+import javax.inject.Singleton;
+import javax.management.MBeanInfo;
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+import org.apache.commons.lang.StringUtils;
+import org.apache.log4j.Logger;
+import org.joda.time.DateTimeZone;
+import org.mortbay.jetty.Connector;
+import org.mortbay.jetty.Server;
+import org.mortbay.jetty.servlet.Context;
 
-import static azkaban.constants.ServerInternals.AZKABAN_EXECUTOR_PORT_FILENAME;
-import static com.google.common.base.Preconditions.checkState;
-import static java.util.Objects.requireNonNull;
-
+@Singleton
 public class AzkabanExecutorServer {
-  private static final String CUSTOM_JMX_ATTRIBUTE_PROCESSOR_PROPERTY = "jmx.attribute.processor.class";
-  private static final Logger logger = Logger.getLogger(AzkabanExecutorServer.class);
-  private static final int MAX_FORM_CONTENT_SIZE = 10 * 1024 * 1024;
 
   public static final String JOBTYPE_PLUGIN_DIR = "azkaban.jobtype.plugin.dir";
   public static final String METRIC_INTERVAL = "executor.metric.milisecinterval.";
-  public static final int DEFAULT_HEADER_BUFFER_SIZE = 4096;
-
+  private static final String CUSTOM_JMX_ATTRIBUTE_PROCESSOR_PROPERTY = "jmx.attribute.processor.class";
+  private static final Logger logger = Logger.getLogger(AzkabanExecutorServer.class);
   private static final String DEFAULT_TIMEZONE_ID = "default.timezone.id";
-  private static final int DEFAULT_THREAD_NUMBER = 50;
 
   private static AzkabanExecutorServer app;
 
+  private final ExecMetrics execMetrics;
   private final ExecutorLoader executionLoader;
-  private final ProjectLoader projectLoader;
   private final FlowRunnerManager runnerManager;
+  private final MetricsManager metricsManager;
   private final Props props;
   private final Server server;
+  private final Context root;
 
-  private final ArrayList<ObjectName> registeredMBeans = new ArrayList<ObjectName>();
+  private final ArrayList<ObjectName> registeredMBeans = new ArrayList<>();
   private MBeanServer mbeanServer;
 
-  /**
-   * Constructor
-   *
-   * @throws Exception
-   */
-  public AzkabanExecutorServer(Props props) throws Exception {
+  @Inject
+  public AzkabanExecutorServer(final Props props,
+      final ExecutorLoader executionLoader,
+      final FlowRunnerManager runnerManager,
+      final MetricsManager metricsManager,
+      final ExecMetrics execMetrics,
+      @Named(EXEC_JETTY_SERVER) final Server server,
+      @Named(EXEC_ROOT_CONTEXT) final Context root) throws Exception {
     this.props = props;
-    server = createJettyServer(props);
+    this.executionLoader = executionLoader;
+    this.runnerManager = runnerManager;
 
-    executionLoader = new JdbcExecutorLoader(props);
-    projectLoader = new JdbcProjectLoader(props);
-    runnerManager = new FlowRunnerManager(props, executionLoader, projectLoader, getClass().getClassLoader());
+    this.metricsManager = metricsManager;
+    this.execMetrics = execMetrics;
+    this.server = server;
+    this.root = root;
+  }
 
-    JmxJobMBeanManager.getInstance().initialize(props);
+  /**
+   * Returns the currently executing executor server, if one exists.
+   */
+  public static AzkabanExecutorServer getApp() {
+    return app;
+  }
+
+  /**
+   * Azkaban using Jetty
+   */
+  public static void main(final String[] args) throws Exception {
+    // Redirect all std out and err messages into log4j
+    StdOutErrRedirect.redirectOutAndErrToLog();
+
+    logger.info("Starting Jetty Azkaban Executor...");
+    final Props props = AzkabanServer.loadProps(args);
+
+    if (props == null) {
+      logger.error("Azkaban Properties not loaded.");
+      logger.error("Exiting Azkaban Executor Server...");
+      return;
+    }
+
+    /* Initialize Guice Injector */
+    final Injector injector = Guice
+        .createInjector(new AzkabanCommonModule(props), new AzkabanExecServerModule());
+    SERVICE_PROVIDER.setInjector(injector);
+
+    launch(injector.getInstance(AzkabanExecutorServer.class));
+  }
+
+  public static void launch(final AzkabanExecutorServer azkabanExecutorServer) throws Exception {
+    azkabanExecutorServer.start();
+    setupTimeZone(azkabanExecutorServer.getAzkabanProps());
+    app = azkabanExecutorServer;
+
+    Runtime.getRuntime().addShutdownHook(new Thread() {
+
+      @Override
+      public void run() {
+        try {
+          logTopMemoryConsumers();
+        } catch (final Exception e) {
+          logger.info(("Exception when logging top memory consumers"), e);
+        }
+
+        final String host = app.getHost();
+        final int port = app.getPort();
+        try {
+          logger.info(String
+              .format("Removing executor(host: %s, port: %s) entry from database...", host, port));
+          app.getExecutorLoader().removeExecutor(host, port);
+        } catch (final ExecutorManagerException ex) {
+          logger.error(
+              String.format("Exception when removing executor(host: %s, port: %s)", host, port),
+              ex);
+        }
+
+        logger.warn("Shutting down executor...");
+        try {
+          app.shutdownNow();
+          app.getFlowRunnerManager().deleteExecutionDirectory();
+        } catch (final Exception e) {
+          logger.error("Error while shutting down http server.", e);
+        }
+      }
+
+      public void logTopMemoryConsumers() throws Exception, IOException {
+        if (new File("/bin/bash").exists() && new File("/bin/ps").exists()
+            && new File("/usr/bin/head").exists()) {
+          logger.info("logging top memeory consumer");
+
+          final java.lang.ProcessBuilder processBuilder =
+              new java.lang.ProcessBuilder("/bin/bash", "-c",
+                  "/bin/ps aux --sort -rss | /usr/bin/head");
+          final Process p = processBuilder.start();
+          p.waitFor();
+
+          final InputStream is = p.getInputStream();
+          final java.io.BufferedReader reader =
+              new java.io.BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+          String line = null;
+          while ((line = reader.readLine()) != null) {
+            logger.info(line);
+          }
+          is.close();
+        }
+      }
+    });
+  }
+
+  private static void setupTimeZone(final Props azkabanSettings) {
+    if (azkabanSettings.containsKey(DEFAULT_TIMEZONE_ID)) {
+      final String timezone = azkabanSettings.getString(DEFAULT_TIMEZONE_ID);
+      System.setProperty("user.timezone", timezone);
+      TimeZone.setDefault(TimeZone.getTimeZone(timezone));
+      DateTimeZone.setDefault(DateTimeZone.forID(timezone));
+
+      logger.info("Setting timezone to " + timezone);
+    }
+  }
+
+  private void start() throws Exception {
+    this.root.setAttribute(Constants.AZKABAN_SERVLET_CONTEXT_KEY, this);
+
+    JmxJobMBeanManager.getInstance().initialize(this.props);
 
     // make sure this happens before
-    configureJobCallback(props);
+    configureJobCallback(this.props);
 
     configureMBeanServer();
     configureMetricReports();
 
-    SystemMemoryInfo.init(props.getInt("executor.memCheck.interval", 30));
-
-    loadCustomJMXAttributeProcessor(props);
+    loadCustomJMXAttributeProcessor(this.props);
 
     try {
-      server.start();
-    } catch (Exception e) {
+      this.server.start();
+    } catch (final Exception e) {
       logger.error(e);
       Utils.croak(e.getMessage(), 1);
     }
@@ -138,86 +243,50 @@ public class AzkabanExecutorServer {
 
     logger.info("Started Executor Server on " + getExecutorHostPort());
 
-    if (props.getBoolean(ServerProperties.IS_METRICS_ENABLED, false)) {
+    if (this.props.getBoolean(ConfigurationKeys.IS_METRICS_ENABLED, false)) {
       startExecMetrics();
     }
   }
 
-  private Server createJettyServer(Props props) {
-    int maxThreads = props.getInt("executor.maxThreads", DEFAULT_THREAD_NUMBER);
-
-    /*
-     * Default to a port number 0 (zero)
-     * The Jetty server automatically finds an unused port when the port number is set to zero
-     * TODO: This is using a highly outdated version of jetty [year 2010]. needs to be updated.
-     */
-    Server server = new Server(props.getInt("executor.port", 0));
-    QueuedThreadPool httpThreadPool = new QueuedThreadPool(maxThreads);
-    server.setThreadPool(httpThreadPool);
-
-    boolean isStatsOn = props.getBoolean("executor.connector.stats", true);
-    logger.info("Setting up connector with stats on: " + isStatsOn);
-
-    for (Connector connector : server.getConnectors()) {
-      connector.setStatsOn(isStatsOn);
-      logger.info(String.format(
-          "Jetty connector name: %s, default header buffer size: %d",
-          connector.getName(), connector.getHeaderBufferSize()));
-      connector.setHeaderBufferSize(props.getInt("jetty.headerBufferSize",
-          DEFAULT_HEADER_BUFFER_SIZE));
-      logger.info(String.format(
-          "Jetty connector name: %s, (if) new header buffer size: %d",
-          connector.getName(), connector.getHeaderBufferSize()));
-    }
-
-    Context root = new Context(server, "/", Context.SESSIONS);
-    root.setMaxFormContentSize(MAX_FORM_CONTENT_SIZE);
-
-    root.addServlet(new ServletHolder(new ExecutorServlet()), "/executor");
-    root.addServlet(new ServletHolder(new JMXHttpServlet()), "/jmx");
-    root.addServlet(new ServletHolder(new StatsServlet()), "/stats");
-    root.addServlet(new ServletHolder(new ServerStatisticsServlet()), "/serverStatistics");
-
-    root.setAttribute(ServerInternals.AZKABAN_SERVLET_CONTEXT_KEY, this);
-    return server;
-  }
-
   private void startExecMetrics() throws Exception {
-    ExecMetrics.INSTANCE.addFlowRunnerManagerMetrics(getFlowRunnerManager());
+    this.execMetrics.addFlowRunnerManagerMetrics(getFlowRunnerManager());
 
     logger.info("starting reporting Executor Metrics");
-    MetricsManager.INSTANCE.startReporting("AZ-EXEC", props);
+    this.metricsManager.startReporting("AZ-EXEC", this.props);
   }
 
-  private void insertExecutorEntryIntoDB() {
+  private void insertExecutorEntryIntoDB() throws ExecutorManagerException {
     try {
       final String host = requireNonNull(getHost());
       final int port = getPort();
       checkState(port != -1);
-      final Executor executor = executionLoader.fetchExecutor(host, port);
+      final Executor executor = this.executionLoader.fetchExecutor(host, port);
       if (executor == null) {
-        executionLoader.addExecutor(host, port);
+        this.executionLoader.addExecutor(host, port);
       }
       // If executor already exists, ignore it
-    } catch (ExecutorManagerException e) {
+    } catch (final ExecutorManagerException e) {
       logger.error("Error inserting executor entry into DB", e);
-      Throwables.propagate(e);
+      throw e;
     }
   }
 
-  private void dumpPortToFile() {
+  private void dumpPortToFile() throws IOException {
     // By default this should write to the working directory
-    try (BufferedWriter writer = new BufferedWriter(new FileWriter(AZKABAN_EXECUTOR_PORT_FILENAME))) {
+    final String portFile = this.props
+        .getString(Constants.AZKABAN_EXECUTOR_PORT_FILE, AZKABAN_EXECUTOR_PORT_FILENAME);
+    try (BufferedWriter writer = Files
+        .newBufferedWriter(Paths.get(portFile), StandardCharsets.UTF_8)) {
       writer.write(String.valueOf(getPort()));
       writer.write("\n");
-    } catch (IOException e) {
-      logger.error(e);
-      Throwables.propagate(e);
+    } catch (final IOException e) {
+      logger.error("Failed to write the port number to a file", e);
+      throw e;
     }
   }
 
-  private void configureJobCallback(Props props) {
-    boolean jobCallbackEnabled =
+  private void configureJobCallback(final Props props) {
+    final boolean jobCallbackEnabled =
         props.getBoolean("azkaban.executor.jobcallback.enabled", true);
 
     logger.info("Job callback enabled? " + jobCallbackEnabled);
@@ -229,46 +298,44 @@ public class AzkabanExecutorServer {
 
   /**
    * Configure Metric Reporting as per azkaban.properties settings
-   *
-   * @throws MetricException
    */
   private void configureMetricReports() throws MetricException {
-    Props props = getAzkabanProps();
+    final Props props = getAzkabanProps();
     if (props != null && props.getBoolean("executor.metric.reports", false)) {
       logger.info("Starting to configure Metric Reports");
-      MetricReportManager metricManager = MetricReportManager.getInstance();
-      IMetricEmitter metricEmitter = new InMemoryMetricEmitter(props);
+      final MetricReportManager metricManager = MetricReportManager.getInstance();
+      final IMetricEmitter metricEmitter = new InMemoryMetricEmitter(props);
       metricManager.addMetricEmitter(metricEmitter);
 
       logger.info("Adding number of failed flow metric");
       metricManager.addMetric(new NumFailedFlowMetric(metricManager, props
           .getInt(METRIC_INTERVAL
-              + NumFailedFlowMetric.NUM_FAILED_FLOW_METRIC_NAME,
+                  + NumFailedFlowMetric.NUM_FAILED_FLOW_METRIC_NAME,
               props.getInt(METRIC_INTERVAL + "default"))));
 
       logger.info("Adding number of failed jobs metric");
       metricManager.addMetric(new NumFailedJobMetric(metricManager, props
           .getInt(METRIC_INTERVAL
-              + NumFailedJobMetric.NUM_FAILED_JOB_METRIC_NAME,
+                  + NumFailedJobMetric.NUM_FAILED_JOB_METRIC_NAME,
               props.getInt(METRIC_INTERVAL + "default"))));
 
       logger.info("Adding number of running Jobs metric");
       metricManager.addMetric(new NumRunningJobMetric(metricManager, props
           .getInt(METRIC_INTERVAL
-              + NumRunningJobMetric.NUM_RUNNING_JOB_METRIC_NAME,
+                  + NumRunningJobMetric.NUM_RUNNING_JOB_METRIC_NAME,
               props.getInt(METRIC_INTERVAL + "default"))));
 
       logger.info("Adding number of running flows metric");
-      metricManager.addMetric(new NumRunningFlowMetric(runnerManager,
+      metricManager.addMetric(new NumRunningFlowMetric(this.runnerManager,
           metricManager, props.getInt(METRIC_INTERVAL
               + NumRunningFlowMetric.NUM_RUNNING_FLOW_METRIC_NAME,
-              props.getInt(METRIC_INTERVAL + "default"))));
+          props.getInt(METRIC_INTERVAL + "default"))));
 
       logger.info("Adding number of queued flows metric");
-      metricManager.addMetric(new NumQueuedFlowMetric(runnerManager,
+      metricManager.addMetric(new NumQueuedFlowMetric(this.runnerManager,
           metricManager, props.getInt(METRIC_INTERVAL
               + NumQueuedFlowMetric.NUM_QUEUED_FLOW_METRIC_NAME,
-              props.getInt(METRIC_INTERVAL + "default"))));
+          props.getInt(METRIC_INTERVAL + "default"))));
 
       logger.info("Completed configuring Metric Reports");
     }
@@ -276,29 +343,26 @@ public class AzkabanExecutorServer {
   }
 
   /**
-   * Load a custom class, which is provided by a configuration
-   * CUSTOM_JMX_ATTRIBUTE_PROCESSOR_PROPERTY.
+   * Load a custom class, which is provided by a configuration CUSTOM_JMX_ATTRIBUTE_PROCESSOR_PROPERTY.
    *
-   * This method will try to instantiate an instance of this custom class and
-   * with given properties as the argument in the constructor.
+   * This method will try to instantiate an instance of this custom class and with given properties
+   * as the argument in the constructor.
    *
-   * Basically the custom class must have a constructor that takes an argument
-   * with type Properties.
-   *
-   * @param props
+   * Basically the custom class must have a constructor that takes an argument with type
+   * Properties.
    */
-  private void loadCustomJMXAttributeProcessor(Props props) {
-    String jmxAttributeEmitter =
+  private void loadCustomJMXAttributeProcessor(final Props props) {
+    final String jmxAttributeEmitter =
         props.get(CUSTOM_JMX_ATTRIBUTE_PROCESSOR_PROPERTY);
     if (jmxAttributeEmitter != null) {
       try {
         logger.info("jmxAttributeEmitter: " + jmxAttributeEmitter);
-        Constructor<Props>[] constructors =
+        final Constructor<Props>[] constructors =
             (Constructor<Props>[]) Class.forName(jmxAttributeEmitter)
                 .getConstructors();
 
         constructors[0].newInstance(props.toProperties());
-      } catch (Exception e) {
+      } catch (final Exception e) {
         logger.error("Encountered error while loading and instantiating "
             + jmxAttributeEmitter, e);
         throw new IllegalStateException(
@@ -311,191 +375,31 @@ public class AzkabanExecutorServer {
     }
   }
 
-
-  public ProjectLoader getProjectLoader() {
-    return projectLoader;
-  }
-
   public ExecutorLoader getExecutorLoader() {
-    return executionLoader;
+    return this.executionLoader;
   }
 
   /**
    * Returns the global azkaban properties
-   *
-   * @return
    */
   public Props getAzkabanProps() {
-    return props;
-  }
-
-  /**
-   * Returns the currently executing executor server, if one exists.
-   *
-   * @return
-   */
-  public static AzkabanExecutorServer getApp() {
-    return app;
-  }
-
-  /**
-   * Azkaban using Jetty
-   *
-   * @param args
-   * @throws IOException
-   */
-  public static void main(String[] args) throws Exception {
-    // Redirect all std out and err messages into log4j
-    StdOutErrRedirect.redirectOutAndErrToLog();
-
-    logger.info("Starting Jetty Azkaban Executor...");
-    Props azkabanSettings = AzkabanServer.loadProps(args);
-
-    if (azkabanSettings == null) {
-      logger.error("Azkaban Properties not loaded.");
-      logger.error("Exiting Azkaban Executor Server...");
-      return;
-    }
-
-    // Setup time zone
-    if (azkabanSettings.containsKey(DEFAULT_TIMEZONE_ID)) {
-      String timezone = azkabanSettings.getString(DEFAULT_TIMEZONE_ID);
-      System.setProperty("user.timezone", timezone);
-      TimeZone.setDefault(TimeZone.getTimeZone(timezone));
-      DateTimeZone.setDefault(DateTimeZone.forID(timezone));
-
-      logger.info("Setting timezone to " + timezone);
-    }
-
-    app = new AzkabanExecutorServer(azkabanSettings);
-
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-
-      @Override
-      public void run() {
-        try {
-          logTopMemoryConsumers();
-        } catch (Exception e) {
-          logger.info(("Exception when logging top memory consumers"), e);
-        }
-
-        String host = app.getHost();
-        int port = app.getPort();
-        try {
-          logger.info(String.format("Removing executor(host: %s, port: %s) entry from database...", host, port));
-          app.getExecutorLoader().removeExecutor(host, port);
-        } catch (ExecutorManagerException ex) {
-          logger.error(String.format("Exception when removing executor(host: %s, port: %s)", host, port), ex);
-        }
-
-        logger.warn("Shutting down executor...");
-        try {
-          app.shutdownNow();
-        } catch (Exception e) {
-          logger.error("Error while shutting down http server.", e);
-        }
-      }
-
-      public void logTopMemoryConsumers() throws Exception, IOException {
-        if (new File("/bin/bash").exists() && new File("/bin/ps").exists()
-            && new File("/usr/bin/head").exists()) {
-          logger.info("logging top memeory consumer");
-
-          java.lang.ProcessBuilder processBuilder =
-              new java.lang.ProcessBuilder("/bin/bash", "-c",
-                  "/bin/ps aux --sort -rss | /usr/bin/head");
-          Process p = processBuilder.start();
-          p.waitFor();
-
-          InputStream is = p.getInputStream();
-          java.io.BufferedReader reader =
-              new java.io.BufferedReader(new InputStreamReader(is));
-          String line = null;
-          while ((line = reader.readLine()) != null) {
-            logger.info(line);
-          }
-          is.close();
-        }
-      }
-    });
-  }
-
-  /**
-   * Loads the Azkaban property file from the AZKABAN_HOME conf directory
-   *
-   * @return
-   */
-  /* package */static Props loadConfigurationFromAzkabanHome() {
-    String azkabanHome = System.getenv("AZKABAN_HOME");
-
-    if (azkabanHome == null) {
-      logger.error("AZKABAN_HOME not set. Will try default.");
-      return null;
-    }
-
-    if (!new File(azkabanHome).isDirectory()
-        || !new File(azkabanHome).canRead()) {
-      logger.error(azkabanHome + " is not a readable directory.");
-      return null;
-    }
-
-    File confPath = new File(azkabanHome, ServerInternals.DEFAULT_CONF_PATH);
-    if (!confPath.exists() || !confPath.isDirectory() || !confPath.canRead()) {
-      logger
-          .error(azkabanHome + " does not contain a readable conf directory.");
-      return null;
-    }
-
-    return loadAzkabanConfigurationFromDirectory(confPath);
+    return this.props;
   }
 
   public FlowRunnerManager getFlowRunnerManager() {
-    return runnerManager;
-  }
-
-  /**
-   * Loads the Azkaban conf file int a Props object
-   *
-   * @return
-   */
-  private static Props loadAzkabanConfigurationFromDirectory(File dir) {
-    File azkabanPrivatePropsFile =
-        new File(dir, ServerInternals.AZKABAN_PRIVATE_PROPERTIES_FILE);
-    File azkabanPropsFile = new File(dir, ServerInternals.AZKABAN_PROPERTIES_FILE);
-
-    Props props = null;
-    try {
-      // This is purely optional
-      if (azkabanPrivatePropsFile.exists() && azkabanPrivatePropsFile.isFile()) {
-        logger.info("Loading azkaban private properties file");
-        props = new Props(null, azkabanPrivatePropsFile);
-      }
-
-      if (azkabanPropsFile.exists() && azkabanPropsFile.isFile()) {
-        logger.info("Loading azkaban properties file");
-        props = new Props(props, azkabanPropsFile);
-      }
-    } catch (FileNotFoundException e) {
-      logger.error("File not found. Could not load azkaban config file", e);
-    } catch (IOException e) {
-      logger.error(
-          "File found, but error reading. Could not load azkaban config file",
-          e);
-    }
-
-    return props;
+    return this.runnerManager;
   }
 
   private void configureMBeanServer() {
     logger.info("Registering MBeans...");
-    mbeanServer = ManagementFactory.getPlatformMBeanServer();
+    this.mbeanServer = ManagementFactory.getPlatformMBeanServer();
 
-    registerMbean("executorJetty", new JmxJettyServer(server));
-    registerMbean("flowRunnerManager", new JmxFlowRunnerManager(runnerManager));
+    registerMbean("executorJetty", new JmxJettyServer(this.server));
+    registerMbean("flowRunnerManager", new JmxFlowRunnerManager(this.runnerManager));
     registerMbean("jobJMXMBean", JmxJobMBeanManager.getInstance());
 
     if (JobCallbackManager.isInitialized()) {
-      JobCallbackManager jobCallbackMgr = JobCallbackManager.getInstance();
+      final JobCallbackManager jobCallbackMgr = JobCallbackManager.getInstance();
       registerMbean("jobCallbackJMXMBean",
           jobCallbackMgr.getJmxJobCallbackMBean());
     }
@@ -503,24 +407,24 @@ public class AzkabanExecutorServer {
 
   public void close() {
     try {
-      for (ObjectName name : registeredMBeans) {
-        mbeanServer.unregisterMBean(name);
+      for (final ObjectName name : this.registeredMBeans) {
+        this.mbeanServer.unregisterMBean(name);
         logger.info("Jmx MBean " + name.getCanonicalName() + " unregistered.");
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       logger.error("Failed to cleanup MBeanServer", e);
     }
   }
 
-  private void registerMbean(String name, Object mbean) {
-    Class<?> mbeanClass = mbean.getClass();
-    ObjectName mbeanName;
+  private void registerMbean(final String name, final Object mbean) {
+    final Class<?> mbeanClass = mbean.getClass();
+    final ObjectName mbeanName;
     try {
       mbeanName = new ObjectName(mbeanClass.getName() + ":name=" + name);
-      mbeanServer.registerMBean(mbean, mbeanName);
+      this.mbeanServer.registerMBean(mbean, mbeanName);
       logger.info("Bean " + mbeanClass.getCanonicalName() + " registered.");
-      registeredMBeans.add(mbeanName);
-    } catch (Exception e) {
+      this.registeredMBeans.add(mbeanName);
+    } catch (final Exception e) {
       logger.error("Error registering mbean " + mbeanClass.getCanonicalName(),
           e);
     }
@@ -528,22 +432,22 @@ public class AzkabanExecutorServer {
   }
 
   public List<ObjectName> getMbeanNames() {
-    return registeredMBeans;
+    return this.registeredMBeans;
   }
 
-  public MBeanInfo getMBeanInfo(ObjectName name) {
+  public MBeanInfo getMBeanInfo(final ObjectName name) {
     try {
-      return mbeanServer.getMBeanInfo(name);
-    } catch (Exception e) {
+      return this.mbeanServer.getMBeanInfo(name);
+    } catch (final Exception e) {
       logger.error(e);
       return null;
     }
   }
 
-  public Object getMBeanAttribute(ObjectName name, String attribute) {
+  public Object getMBeanAttribute(final ObjectName name, final String attribute) {
     try {
-      return mbeanServer.getAttribute(name, attribute);
-    } catch (Exception e) {
+      return this.mbeanServer.getAttribute(name, attribute);
+    } catch (final Exception e) {
       logger.error(e);
       return null;
     }
@@ -556,9 +460,10 @@ public class AzkabanExecutorServer {
    * @return hostname
    */
   public String getHost() {
-    if(props.containsKey(ServerProperties.AZKABAN_SERVER_HOST_NAME)) {
-      String hostName = props.getString(ServerProperties.AZKABAN_SERVER_HOST_NAME);
-      if(!StringUtils.isEmpty(hostName)) {
+    if (this.props.containsKey(Constants.ConfigurationKeys.AZKABAN_SERVER_HOST_NAME)) {
+      final String hostName = this.props
+          .getString(Constants.ConfigurationKeys.AZKABAN_SERVER_HOST_NAME);
+      if (!StringUtils.isEmpty(hostName)) {
         return hostName;
       }
     }
@@ -566,7 +471,7 @@ public class AzkabanExecutorServer {
     String host = "unkownHost";
     try {
       host = InetAddress.getLocalHost().getCanonicalHostName();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       logger.error("Failed to fetch LocalHostName");
     }
     return host;
@@ -574,10 +479,11 @@ public class AzkabanExecutorServer {
 
   /**
    * Get the current server port
+   *
    * @return the port at which the executor server is running
    */
   public int getPort() {
-    final Connector[] connectors = server.getConnectors();
+    final Connector[] connectors = this.server.getConnectors();
     checkState(connectors.length >= 1, "Server must have at least 1 connector");
 
     // The first connector is created upon initializing the server. That's the one that has the port.
@@ -586,16 +492,14 @@ public class AzkabanExecutorServer {
 
   /**
    * Returns host:port combination for currently running executor
-   * @return
    */
   public String getExecutorHostPort() {
     return getHost() + ":" + getPort();
   }
 
   /**
-   * Shutdown the server.
-   *  - performs a safe shutdown. Waits for completion of current tasks
-   *  - spawns a shutdown thread and returns immediately.
+   * Shutdown the server. - performs a safe shutdown. Waits for completion of current tasks - spawns
+   * a shutdown thread and returns immediately.
    */
   public void shutdown() {
     logger.warn("Shutting down AzkabanExecutorServer...");
@@ -611,12 +515,9 @@ public class AzkabanExecutorServer {
   }
 
   /**
-   * (internal API)
-   * Note: This should be run in a separate thread.
+   * (internal API) Note: This should be run in a separate thread.
    *
-   * Shutdown the server. (blocking call)
-   *  - waits for jobs to finish
-   *  - doesn't accept any new jobs
+   * Shutdown the server. (blocking call) - waits for jobs to finish - doesn't accept any new jobs
    */
   private void shutdownInternal() {
     getFlowRunnerManager().shutdown();
@@ -626,12 +527,11 @@ public class AzkabanExecutorServer {
 
   /**
    * Shutdown the server now! (unsafe)
-   * @throws Exception
    */
   public void shutdownNow() throws Exception {
-    server.stop();
-    server.destroy();
-    SystemMemoryInfo.shutdown();
+    this.server.stop();
+    this.server.destroy();
     getFlowRunnerManager().shutdownNow();
+    close();
   }
 }

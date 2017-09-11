@@ -43,30 +43,26 @@ apply plugin: 'lesscss'
 apply plugin: 'dustjs'
 apply plugin: 'distribution'
 
-ext.pegasusVersion = '1.15.7'
-
 configurations {
   generateRestli
 }
 
 dependencies {
   compile(project(':azkaban-common'))
-  compile('com.linkedin.pegasus:restli-server:' + pegasusVersion)
-  compile('org.apache.velocity:velocity-tools:2.0')
+
+  compile deps.restliServer
+  compile deps.velocityTools
 
   testCompile(project(path: ':azkaban-common', configuration: 'testCompile'))
-  testCompile('commons-collections:commons-collections:3.2.2')
-  testCompile('org.hamcrest:hamcrest-all:1.3')
+  testCompile deps.collections
 
   //AZ web module tests need to access classes defined in azkaban-common test module
   testCompile project(':azkaban-common').sourceSets.test.output
 
-  generateRestli('com.linkedin.pegasus:generator:' + pegasusVersion)
-  generateRestli('com.linkedin.pegasus:restli-tools:' + pegasusVersion)
+  generateRestli deps.restliGenerator
+  generateRestli deps.restliTools
 
-  // Needed by Velocity at runtime
-  testRuntime('commons-collections:commons-collections:3.2.2')
-  testCompile('org.hamcrest:hamcrest-all:1.3')
+  testRuntime deps.h2
 }
 
 sourceSets {
@@ -93,7 +89,7 @@ task movingJsTojsToPackage(dependsOn: ['npm_install']) {
       into "${buildDir}/jsToPackage"
     }
     copy {
-      from "node_modules/moment-timezone/builds/moment-timezone-with-data-2010-2020.min.js"
+      from "node_modules/moment-timezone/builds/moment-timezone-with-data.min.js"
       into "${buildDir}/jsToPackage"
     }
   }
@@ -124,15 +120,18 @@ task restliTemplateGenerator(type: JavaExec) {
   classpath = configurations.generateRestli
 }
 
-task restliRestSpecGenerator(dependsOn: [restliTemplateGenerator], type: JavaExec) << {
-  mkdir 'src/restli/generatedRestSpec'
+task restliRestSpecGenerator(dependsOn: [restliTemplateGenerator], type: JavaExec) {
+  doLast {
+    mkdir 'src/restli/generatedRestSpec'
 
-  main = 'com.linkedin.restli.tools.idlgen.RestLiResourceModelExporterCmdLineApp'
-  args = ['-outdir', 'src/restli/generatedRestSpec', '-sourcepath', 'src/restli/java']
-  classpath = configurations.generateRestli
+    main = 'com.linkedin.restli.tools.idlgen.RestLiResourceModelExporterCmdLineApp'
+    args = ['-outdir', 'src/restli/generatedRestSpec', '-sourcepath', 'src/restli/java']
+    classpath = configurations.generateRestli
+  }
 }
 
-task restli(dependsOn: restliTemplateGenerator) << {
+task restli(dependsOn: restliTemplateGenerator) {
+  doLast {}
 }
 
 compileJava.dependsOn.add('restli')
